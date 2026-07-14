@@ -11,14 +11,12 @@
             "id": "9e1127454dbace2f",
             "type": "leaf",
             "state": {
-              "type": "markdown",
+              "type": "pdf",
               "state": {
-                "file": "README.md",
-                "mode": "source",
-                "source": false
+                "file": "分布式学习/MapReduce论文完整中文翻译gpt.pdf"
               },
-              "icon": "lucide-file",
-              "title": "README"
+              "icon": "lucide-file-text",
+              "title": "MapReduce论文完整中文翻译gpt"
             }
           }
         ]
@@ -156,13 +154,13 @@
             "state": {
               "type": "outline",
               "state": {
-                "file": "README.md",
+                "file": "分布式学习/MapReduce论文完整中文翻译gpt.pdf",
                 "followCursor": true,
                 "showSearch": false,
                 "searchQuery": ""
               },
               "icon": "lucide-list",
-              "title": "README 的大纲"
+              "title": "MapReduce论文完整中文翻译gpt 的大纲"
             }
           }
         ],
@@ -188,9 +186,11 @@
   "active": "9e1127454dbace2f",
   "lastOpenFiles": [
     "分布式学习/mapreduce.pdf",
+    "分布式学习/MapReduce论文完整中文翻译gpt.pdf",
+    "分布式学习/MapReduce论文完整中文翻译与学习导读.pdf",
+    "README.md",
     "分布式学习",
     "Webserver项目.md",
-    "README.md",
     "_README.md",
     "Agent 服务项目.md",
     "Cache 缓存池项目.md",
