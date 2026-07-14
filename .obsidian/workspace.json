@@ -11,14 +11,12 @@
             "id": "9e1127454dbace2f",
             "type": "leaf",
             "state": {
-              "type": "markdown",
+              "type": "pdf",
               "state": {
-                "file": "README.md",
-                "mode": "source",
-                "source": false
+                "file": "分布式学习/mapreduce.pdf"
               },
-              "icon": "lucide-file",
-              "title": "README"
+              "icon": "lucide-file-text",
+              "title": "mapreduce"
             }
           }
         ]
@@ -156,13 +154,13 @@
             "state": {
               "type": "outline",
               "state": {
-                "file": "README.md",
+                "file": "分布式学习/mapreduce.pdf",
                 "followCursor": true,
                 "showSearch": false,
                 "searchQuery": ""
               },
               "icon": "lucide-list",
-              "title": "README 的大纲"
+              "title": "mapreduce 的大纲"
             }
           }
         ],
@@ -185,11 +183,13 @@
       "bases:新建数据库": false
     }
   },
-  "active": "9e1127454dbace2f",
+  "active": "831b16627c1b9385",
   "lastOpenFiles": [
+    "分布式学习",
+    "Webserver项目.md",
+    "README.md",
     "_README.md",
     "Agent 服务项目.md",
-    "Webserver项目.md",
     "Cache 缓存池项目.md",
     "Excalidraw/多线程(主从)Reactor 网络模型.md",
     "Excalidraw/日志系统.md",
