@@ -16,11 +16,10 @@ GitHub链接：[分布式系统](https://github.com/youngyangyang04/KVstorageBas
 ## HTTP/Agent项目
 文档链接：[HTTP服务框架](https://www.yuque.com/chengxuyuancarl/imh9xc?#)密码：xc77
 GitHub链接：[HTTP服务框架](https://github.com/youngyangyang04/Kama-HTTPServer)
-
-Agent链接:[Agent](https://github.com/youngyangyang04/CppAIService)
+Agent链接:[Agent](https://github.com/youngyangyang04/CppAIService) 这是后续HTTP服务器可以实现的一个方向
 ## 数据库项目
 [CMU 15445](https://15445.courses.cs.cmu.edu/fall2025/schedule.html)
 这里是2025fall 因为之前的提交都已经截止失效了。
 [这里是作业提交网站 Gradescope](https://www.gradescope.com/)
-
-
+[这是我写完作业的笔记git](https://github.com/W3nYui/CMU15445-2025FALL-notes)
+[这是我写完作业的知乎](https://zhuanlan.zhihu.com/p/2058632609798923944)
