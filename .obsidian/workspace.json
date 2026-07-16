@@ -174,29 +174,33 @@
   },
   "left-ribbon": {
     "hiddenItems": {
-      "obsidian-git:Open Git source control": false,
-      "obsidian-excalidraw-plugin:新建绘图文件": false,
       "switcher:打开快速切换": false,
       "graph:查看关系图谱": false,
       "canvas:新建白板": false,
       "daily-notes:打开/创建今天的日记": false,
       "templates:插入模板": false,
       "command-palette:打开命令面板": false,
-      "bases:新建数据库": false
+      "bases:新建数据库": false,
+      "obsidian-git:Open Git source control": false,
+      "obsidian-excalidraw-plugin:新建绘图文件": false
     }
   },
   "active": "9e1127454dbace2f",
   "lastOpenFiles": [
+    "分布式学习/Spanner, TrueTime &\nThe CAP Theorem.pdf",
+    "分布式学习/未确认 788133.crdownload",
+    "分布式学习/CAP_twelve_years_later_How_the_rules_have_changed.pdf",
     "分布式学习/mapreduce.pdf",
     "分布式学习/分布式学习.md",
+    "分布式学习/未确认 222361.crdownload",
+    "Webserver项目.md",
+    "README.md",
     "未命名",
     "分布式学习/MapReduce论文完整中文翻译gpt.pdf",
-    "README.md",
     "Cache 缓存池项目.md",
     "Agent 服务项目.md",
     "分布式学习/MapReduce论文完整中文翻译与学习导读.pdf",
     "分布式学习",
-    "Webserver项目.md",
     "_README.md",
     "Excalidraw/多线程(主从)Reactor 网络模型.md",
     "Excalidraw/日志系统.md",
@@ -211,9 +215,6 @@
     "conflict-files-obsidian-git.md",
     "KamaHTTP 服务项目",
     "Pasted image 20260126211310.png",
-    "未命名 2.base",
-    "未命名 1.base",
-    "未命名.base",
     "Pasted image 20260123102249.png"
   ]
 }
