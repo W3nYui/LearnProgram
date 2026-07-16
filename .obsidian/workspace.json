@@ -185,11 +185,12 @@
       "obsidian-excalidraw-plugin:新建绘图文件": false
     }
   },
-  "active": "263c10971a4e357a",
+  "active": "080dc73bb5f6fcc6",
   "lastOpenFiles": [
-    "conflict-files-obsidian-git.md",
-    "分布式学习/分布式学习.md",
+    "README.md",
     "分布式学习/CAP十二年后_中文译文与总结.md",
+    "分布式学习/分布式学习.md",
+    "conflict-files-obsidian-git.md",
     "分布式学习/CAP_twelve_years_later_How_the_rules_have_changed.pdf"
   ]
 }
