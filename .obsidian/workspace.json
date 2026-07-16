@@ -165,12 +165,12 @@
               "title": "分布式学习 的大纲"
             }
           }
-        ]
+        ],
+        "currentTab": 4
       }
     ],
     "direction": "horizontal",
-    "width": 300,
-    "collapsed": true
+    "width": 300
   },
   "left-ribbon": {
     "hiddenItems": {
@@ -185,7 +185,7 @@
       "obsidian-excalidraw-plugin:新建绘图文件": false
     }
   },
-  "active": "080dc73bb5f6fcc6",
+  "active": "263c10971a4e357a",
   "lastOpenFiles": [
     "conflict-files-obsidian-git.md",
     "分布式学习/分布式学习.md",
