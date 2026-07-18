@@ -157,7 +157,7 @@
               "type": "outline",
               "state": {
                 "file": "分布式学习/分布式学习.md",
-                "followCursor": false,
+                "followCursor": true,
                 "showSearch": false,
                 "searchQuery": ""
               },
