@@ -13,12 +13,12 @@
             "state": {
               "type": "markdown",
               "state": {
-                "file": "README.md",
+                "file": "Agent 服务项目.md",
                 "mode": "source",
                 "source": false
               },
               "icon": "lucide-file",
-              "title": "README"
+              "title": "Agent 服务项目"
             }
           }
         ]
@@ -156,13 +156,13 @@
             "state": {
               "type": "outline",
               "state": {
-                "file": "README.md",
+                "file": "Agent 服务项目.md",
                 "followCursor": true,
                 "showSearch": false,
                 "searchQuery": ""
               },
               "icon": "lucide-list",
-              "title": "README 的大纲"
+              "title": "Agent 服务项目 的大纲"
             }
           }
         ],
@@ -187,9 +187,21 @@
   },
   "active": "080dc73bb5f6fcc6",
   "lastOpenFiles": [
+    "conflict-files-obsidian-git.md",
+    "Agent 服务项目.md",
+    "分布式学习/Spanner, TrueTime & The CAP Theorem.pdf",
+    "分布式学习/MapReduce论文完整中文翻译gpt.pdf",
+    "分布式学习/CAP十二年后_中文译文与总结.md",
+    "README.md",
+    "image/Pasted image 20260721182106.png",
+    "image/Pasted image 20260721181950.png",
+    "image",
+    "Raft-KV项目细节/Raft-KV源码阅读与数据流指南.md",
+    "Raft-KV项目细节/Protobuf在C++与本项目RPC中的工作原理.md",
+    "Raft-KV项目细节",
+    "Excalidraw/Raft集群测试.md",
     "分布式学习/分布式学习.md",
     "raft-KV.md",
-    "Agent 服务项目.md",
     "Cache 缓存池项目.md",
     "Webserver项目.md",
     "分布式学习/image/Pasted image 20260719024345.png",
@@ -200,12 +212,7 @@
     "分布式学习/image/Pasted image 20260719012538.png",
     "分布式学习/image/Pasted image 20260719010521.png",
     "分布式学习/image/Pasted image 20260718234339.png",
-    "分布式学习/image/Pasted image 20260718190306.png",
-    "分布式学习/image/Pasted image 20260718184545.png",
-    "README.md",
     "分布式学习/image",
-    "分布式学习/CAP十二年后_中文译文与总结.md",
-    "conflict-files-obsidian-git.md",
     "分布式学习/CAP_twelve_years_later_How_the_rules_have_changed.pdf"
   ]
 }
