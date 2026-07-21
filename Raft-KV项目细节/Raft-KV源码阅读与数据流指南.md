@@ -162,11 +162,11 @@ flowchart TB
 
 ### 4.1 三份协议的分工
 
-| 协议 | 服务 | 使用方 | 作用 |
-| --- | --- | --- | --- |
-| `src/rpc/rpcheader.proto` | 无业务 service | 所有 RPC | 自定义传输帧头：服务名、方法名、参数长度 |
+| 协议                                 | 服务            | 使用方              | 作用                              |
+| ---------------------------------- | ------------- | ---------------- | ------------------------------- |
+| `src/rpc/rpcheader.proto`          | 无业务 service   | 所有 RPC           | 自定义传输帧头：服务名、方法名、参数长度            |
 | `src/raftRpcPro/kvServerRPC.proto` | `kvServerRpc` | Clerk ↔ KvServer | 客户端读写；包含 `ClientId`、`RequestId` |
-| `src/raftRpcPro/raftRPC.proto` | `raftRpc` | Raft ↔ Raft | 选举、日志复制、快照安装 |
+| `src/raftRpcPro/raftRPC.proto`     | `raftRpc`     | Raft ↔ Raft      | 选举、日志复制、快照安装                    |
 
 客户端侧的 `raftServerRpcUtil` / `RaftRpcUtil` 都把生成的 Protobuf stub 包起来。它们每次调用创建 `MprpcController`，调用 stub，最后以 `controller.Failed()` 把“网络或编解码失败”转换成 `bool`。业务失败（例如不是 Leader）则写在 reply 的 `Err` 字段中；这是两类不同的失败。
 
