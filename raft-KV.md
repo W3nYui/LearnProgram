@@ -115,7 +115,7 @@ service FiendServiceRpc {
 ```
 message AddFriendRequest {
   uint32 userid = 1;
-  uint32 friend_userid = 2;
+  bytes friend_userid = 2;
 }
 
 message AddFriendResponse {
@@ -142,5 +142,8 @@ cmake --build build --target provider consumer -j
 ```
 
 框架会自动把 `FiendServiceRpc` 与 `AddFriend` 写入 RPC 请求头；`RpcProvider` 根据这两个名字找到服务和方法，再调用你重写的 `FriendService::AddFriend`。`userid` 只是在 `AddFriend` 或 `GetFriendsList` 内决定“对哪个用户执行业务逻辑”，不决定远端函数本身。
+
+总而言之：
+在 C++ RPC 项目中，通常为每个 RPC 方法定义对应的**请求和响应** Protobuf 消息，并在同一个 Service 中声明这些方法。客户端通过生成的 Stub 和 RPC Channel 发起调用，服务端通过继承生成的 Service 基类实现方法，RPC 框架负责网络通信与请求分发。
 ### RPC_caller的一次获取
 ![[Pasted image 20260721182106.png|900]]
