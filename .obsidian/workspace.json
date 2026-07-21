@@ -22,6 +22,20 @@
             }
           },
           {
+            "id": "b6efe241528a079c",
+            "type": "leaf",
+            "state": {
+              "type": "markdown",
+              "state": {
+                "file": "Raft-KV项目细节/Raft-KV源码阅读与数据流指南.md",
+                "mode": "source",
+                "source": false
+              },
+              "icon": "lucide-file",
+              "title": "Raft-KV源码阅读与数据流指南"
+            }
+          },
+          {
             "id": "1ea202308405cc7b",
             "type": "leaf",
             "state": {
@@ -34,9 +48,23 @@
               "icon": "lucide-file",
               "title": "Protobuf在C++与本项目RPC中的工作原理"
             }
+          },
+          {
+            "id": "fe92a5f76f015624",
+            "type": "leaf",
+            "state": {
+              "type": "markdown",
+              "state": {
+                "file": "raft-KV.md",
+                "mode": "source",
+                "source": false
+              },
+              "icon": "lucide-file",
+              "title": "raft-KV"
+            }
           }
         ],
-        "currentTab": 1
+        "currentTab": 3
       }
     ],
     "direction": "vertical"
@@ -171,13 +199,13 @@
             "state": {
               "type": "outline",
               "state": {
-                "file": "conflict-files-obsidian-git.md",
+                "file": "raft-KV.md",
                 "followCursor": true,
                 "showSearch": false,
                 "searchQuery": ""
               },
               "icon": "lucide-list",
-              "title": "conflict-files-obsidian-git 的大纲"
+              "title": "raft-KV 的大纲"
             }
           }
         ],
@@ -200,18 +228,22 @@
       "obsidian-excalidraw-plugin:新建绘图文件": false
     }
   },
-  "active": "831b16627c1b9385",
+  "active": "fe92a5f76f015624",
   "lastOpenFiles": [
+    "image/Pasted image 20260721182106.png",
+    "image/Pasted image 20260721181950.png",
+    "image",
     "Raft-KV项目细节/Protobuf在C++与本项目RPC中的工作原理.md",
+    "raft-KV.md",
+    "Raft-KV项目细节/Raft-KV源码阅读与数据流指南.md",
+    "分布式学习/分布式学习.md",
+    "Excalidraw/Raft集群测试.md",
+    "README.md",
     "conflict-files-obsidian-git.md",
     "Agent 服务项目.md",
     "Cache 缓存池项目.md",
     "Webserver项目.md",
-    "Raft-KV项目细节/Raft-KV源码阅读与数据流指南.md",
-    "分布式学习/分布式学习.md",
     "Raft-KV项目细节",
-    "raft-KV.md",
-    "README.md",
     "分布式学习/image/Pasted image 20260719024345.png",
     "分布式学习/image/Pasted image 20260719024022.png",
     "分布式学习/image/Pasted image 20260719022402.png",
@@ -221,7 +253,6 @@
     "分布式学习/image/Pasted image 20260718234339.png",
     "分布式学习/image/Pasted image 20260718190306.png",
     "分布式学习/image/Pasted image 20260718184545.png",
-    "分布式学习/image/Pasted image 20260718165327.png",
     "分布式学习/image",
     "分布式学习/Spanner, TrueTime & The CAP Theorem.pdf",
     "分布式学习/CAP十二年后_中文译文与总结.md",
@@ -233,7 +264,6 @@
     "分布式学习/mapreduce.pdf",
     "分布式学习/未确认 222361.crdownload",
     "未命名",
-    "分布式学习/MapReduce论文完整中文翻译gpt.pdf",
     "_README.md",
     "Excalidraw/多线程(主从)Reactor 网络模型.md",
     "Excalidraw/日志系统.md",

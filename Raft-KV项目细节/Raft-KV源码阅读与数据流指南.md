@@ -27,11 +27,11 @@ flowchart LR
 
 要始终区分下面三个时刻：
 
-| 时刻 | 谁完成 | 含义 |
-| --- | --- | --- |
-| RPC 请求送达 | `RpcProvider` | 对端收到字节并开始执行，不代表写入成功 |
-| 日志被追加 | Leader 的 `Raft::Start` | 仅领导者的未提交日志增加，不代表多数派已同意 |
-| 状态机应用 | `KvServer::GetCommandFromRaft` | 命令已按 Raft 提交顺序执行，客户端才可得到成功结果 |
+| 时刻       | 谁完成                            | 含义                           |
+| -------- | ------------------------------ | ---------------------------- |
+| RPC 请求送达 | `RpcProvider`                  | 对端收到字节并开始执行，不代表写入成功          |
+| 日志被追加    | Leader 的 `Raft::Start`         | 仅领导者的未提交日志增加，不代表多数派已同意       |
+| 状态机应用    | `KvServer::GetCommandFromRaft` | 命令已按 Raft 提交顺序执行，客户端才可得到成功结果 |
 
 ## 2. 推荐阅读流程
 
@@ -76,14 +76,14 @@ flowchart LR
 
 这些不是理解 Raft 的前置条件，但很适合在读到时复盘：
 
-| 位置 | 知识点 | 在本项目中的作用 |
-| --- | --- | --- |
-| `raft.cpp`、`kvServer.cpp` | `std::shared_ptr`、`std::make_shared`、`std::unique_ptr` | Raft peer、应用队列、IOManager 的共享/唯一生命周期 |
-| `raft.cpp` | `std::thread`、lambda、`detach` | 并发发送投票/日志 RPC，启动应用线程 |
-| `common/include/util.h` | `std::mutex`、`std::lock_guard`、`std::unique_lock`、`condition_variable` | 实现 `LockQueue<T>` 的阻塞与超时等待 |
-| `raft.cpp` | `std::chrono`、随机数引擎 | 选举超时随机化，降低同时竞选概率 |
-| `raft.cpp`、`kvServer.cpp` | RAII 与项目的 `DEFER` 宏 | 在有多个提前返回分支时保证持久化或解锁动作 |
-| 全工程 | CMake 指定 C++20 | 可用 C++20 编译环境；当前主逻辑主要采用传统线程/RAII，而非 `co_await` 协程 |
+| 位置                        | 知识点                                                                    | 在本项目中的作用                                          |
+| ------------------------- | ---------------------------------------------------------------------- | ------------------------------------------------- |
+| `raft.cpp`、`kvServer.cpp` | `std::shared_ptr`、`std::make_shared`、`std::unique_ptr`                 | Raft peer、应用队列、IOManager 的共享/唯一生命周期               |
+| `raft.cpp`                | `std::thread`、lambda、`detach`                                          | 并发发送投票/日志 RPC，启动应用线程                              |
+| `common/include/util.h`   | `std::mutex`、`std::lock_guard`、`std::unique_lock`、`condition_variable` | 实现 `LockQueue<T>` 的阻塞与超时等待                        |
+| `raft.cpp`                | `std::chrono`、随机数引擎                                                    | 选举超时随机化，降低同时竞选概率                                  |
+| `raft.cpp`、`kvServer.cpp` | RAII 与项目的 `DEFER` 宏                                                    | 在有多个提前返回分支时保证持久化或解锁动作                             |
+| 全工程                       | CMake 指定 C++20                                                         | 可用 C++20 编译环境；当前主逻辑主要采用传统线程/RAII，而非 `co_await` 协程 |
 
 读并发代码时，把“线程安全的 C++ 对象”与“分布式一致性”分开：`mutex` 只能让一个节点内的状态不发生数据竞争；Raft 的 term、投票、多数派和日志匹配，才解决多个进程之间谁的状态可以被认可。
 
