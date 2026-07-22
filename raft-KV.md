@@ -56,6 +56,51 @@ Put/Get → 最近 Leader（初始为 node0）
 |无多数派|三节点中停掉两个节点|客户端会持续重试、不会返回成功；恢复多数派后才能提交|
 |落后节点|对一个 Follower 执行 `kill -STOP <pid>`，持续写入，再 `kill -CONT <pid>`|观察 Leader 对该节点补发 `AppendEntries`；这是当前启动器下最接近追赶测试的方式|
 |快照生成|完成 500 次写入后检查 `snapshotPersist*.txt` 和 `[SnapShot]` 日志|能验证快照生成与持久化文件写入|
+
+# 项目数据流梳理
+## 从 clerk -> raftKVDB
+- `raftCoreExample`：端到端入口。`raftKvDB.cpp` fork 多个 KV/Raft 节点；`caller.cpp` 创建 Clerk 并循环 `Put`、`Get`。
+- `raftClerk`：客户端库。维护所有节点代理、`clientId`、递增的 `requestId` 和最近成功的 Leader。
+- `raftRpcPro`：协议真源。`kvServerRPC.proto` 定义 Clerk 到服务端的 `Get/PutAppend`；`raftRPC.proto` 定义节点间 `AppendEntries/RequestVote/InstallSnapshot`。
+- `rpc`：自定义 RPC 框架。负责把 Protobuf 调用变为 TCP 请求，并在服务端按 service/method 分发。
+- `raftCore`：核心。`KvServer` 是复制状态机适配层；`Raft` 是共识层；二者经 `ApplyMsg` 队列连接。
+- `skipList`：当前状态机实际存储结构。Raft 只保证命令顺序一致，不关心 KV 如何存。
+### 一次 Put 的完整链路
+```mermaid
+sequenceDiagram
+  participant C as Clerk
+  participant L as KV Leader
+  participant F as Raft Followers
+  participant K as Leader KV state machine
+
+  C->>C: clientId + requestId, 优先最近 Leader
+  C->>L: kvServerRpc.PutAppend
+  L->>L: KvServer::PutAppend -> Raft::Start(Op)
+  L->>F: raftRpc.AppendEntries(LogEntry)
+  F-->>L: success
+  L->>L: 多数派确认，推进 commitIndex
+  L->>K: ApplyMsg(Command, index)
+  K->>K: 执行 Put / Append，记录已处理 requestId
+  K-->>L: waitApplyCh[index] 通知
+  L-->>C: PutAppendReply(OK)
+```
+- `Clerk::Put` 调用私有 `PutAppend("Put")`。它递增一次 `requestId`，但在整个重试过程中保持该 ID 不变。 
+- Clerk 先尝试 `m_recentLeaderId`。RPC 失败或服务端回复 `ErrWrongLeader`，就轮询下一个节点；成功后将该节点缓存为新的最近 Leader。  
+    这不是 Leader 查询协议，只是一个高命中率的缓存优化。
+- `raftServerRpcUtil` 创建 Protobuf Stub，调用生成的 `kvServerRpc_Stub::PutAppend`。它只把传输失败转换为 `false`。
+- `MprpcChannel::CallMethod` 将请求编码为：  
+    `varint(headerSize) | RpcHeader(service, method, argsSize) | protobuf args`，再通过 TCP 发送。服务端反向解析并基于描述符调用 `KvServer` 的 Protobuf 重写方法。
+- `KvServer::PutAppend` 将协议参数转为内部 `Op {Operation, Key, Value, ClientId, RequestId}`，调用 `Raft::Start`。不是 Leader 时立即回 `ErrWrongLeader`。  
+    `Op` 会用 Boost 序列化成 Raft 日志中 `LogEntry.Command` 的字节串。
+- `Raft::Start` 只在 Leader 上追加日志、持久化，并返回日志索引；它不代表命令已经提交。
+- `KvServer` 以该日志索引建立 `waitApplyCh[index]`，同步等待应用线程通知。这个索引是“当前 RPC”与“最终提交的日志命令”之间的关联键。
+- Leader 的心跳循环构造 `AppendEntries`，把从 follower 的 `nextIndex` 到末尾的日志发送给每个 follower。
+    follower 校验任期和前序日志、写入条目、更新自身 `commitIndex`，然后回复。
+- 多数节点确认后，Leader 推进 `commitIndex`。当前实现还要求候选日志属于当前任期，这符合 Raft 的提交规则。
+- `Raft::applierTicker` 将 `[lastApplied + 1, commitIndex]` 逐项包装为 `ApplyMsg` 并推到 `applyChan`。
+- `KvServer::ReadRaftApplyCommandLoop` 消费 `ApplyMsg`。`GetCommandFromRaft` 对 `Put/Append` 先按 `(clientId, requestId)` 去重，再执行状态机，最后唤醒对应 `waitApplyCh[index]`。  
+    因此“RPC 超时后重发”最多会把同一写命令送入日志多次，但只会对状态机生效一次。
+- 原始 RPC 线程被唤醒后，重新核对 `clientId/requestId`。若该索引后来因 Leader 切换被另一命令覆盖，返回 `ErrWrongLeader` 让 Clerk 重试；匹配才回 `OK`。
 # 重要组成部分
 ## 客户端、集群、节点之间的沟通 -- RPC
 ### Protobuf、RPC 与 TCP 分别负责什么
@@ -144,3 +189,40 @@ cmake --build build --target provider consumer -j
 框架会自动把 `FiendServiceRpc` 与 `AddFriend` 写入 RPC 请求头；`RpcProvider` 根据这两个名字找到服务和方法，再调用你重写的 `FriendService::AddFriend`。`userid` 只是在 `AddFriend` 或 `GetFriendsList` 内决定“对哪个用户执行业务逻辑”，不决定远端函数本身。
 ### RPC_caller的一次获取
 ![[Pasted image 20260721182106.png|900]]
+## 客户端 Clerk
+`Clerk`拥有四类状态：
+- `m_servers`：每个 KV/Raft 节点对应一个 `raftServerRpcUtil` 代理。
+- `m_clientId`：构造时由 `Uuid()` 生成，用于标识客户端。
+- `m_requestId`：从 0 开始递增，为每次逻辑请求编号；重试时保持不变，服务端可据此去重。
+- `m_recentLeaderId`：最近一次成功的节点编号，下一次请求优先向它发出，属于缓存优化。
+`Clerk`读取`raftKvDB`集群创建(fork)时得到的节点 `IP + Port`并利用 `raftServerRpcUtil` 包装，对每一个 `rpc节点`(其IP、port)，生成一组`stub`，便于后续操作复用。
+
+因此`Clerk`通过封装RPC通信`raftServerRpcUtil`，将“怎么发一次 RPC”和“这次业务请求该怎么完成”分开。
+
+**RPC通信**：`raftServerRpcUtil` 只负责单个节点的一次 RPC 调用：其持有 `Protobuf Stub` 和 `MprpcChannel`，调用结束后仅以 `bool` 返回传输给业务层，例如 `controller.Failed()` 为真就返回 `false`。
+
+**业务/集群服务**：`Clerk` 则负责 KV 业务语义：生成 `ClientId/RequestId`、优先访问缓存的 Leader、轮询其他节点、成功后更新 `m_recentLeaderId`。同时将`put`、`Append`、`Get`
+ 等业务封装管理。
+ 这里主要分析的是在`protocol`内定义的`Err`参数，这个参数分析的就是集群内部的失败原因。
+	 由于RPC通信成功，指令已经下达到了远端集群，因此不会是：1.集群无法通信；2.网络错误
+	 而是内部集群无法处理这个指令，因此可能是：1.指令错误；2.当前节点不是leader
+
+那么当一个 `clerk` 下发一次指令如'Put'、'Get'、‘Appen'时，集群内部是怎样接受的呢？
+## RPC的传输 -- MprpcChannel
+在实现客户端与服务器的RPC沟通时，`protobuf` 的 `stub` 如何知道我该怎样发送一个信息，如何在中间插入更多的功能呢？那么就需要利用到 `Protobuf` 官方提供的是一套“可插拔 RPC”接口。官方在 stub 的调用中使用了一个纯虚类 `RpcChannel`的接口虚函数：
+``` c++
+channel_->CallMethod(method descriptor, request, response, ...);
+```
+
+因此我们需要实现一个 `channel` 类，继承`google::protobuf::RpcChannel` 并实现 `CallMethod`，才能让 Protobuf 生成的 Stub 知道如何通过你的 TCP 协议访问远端服务。
+
+在这里，Protobuf 负责消息、服务描述和 Stub 调度接口；网络、连接、封包格式、服务发现及超时策略则可以按照项目需求，通过子类的`CallMethod(method descriptor, request, response, ...);`来实现。
+
+那么我们就可以画出 Channel 与两者之间的链路：
+Clerk
+  -> raftServerRpcUtil
+  -> kvServerRpc_Stub（protoc 生成）
+  -> MprpcChannel::CallMethod（项目手写）
+  -> TCP connect/send/recv
+  -> RpcProvider（服务端项目手写）
+  -> kvServerRpc 的 Get / PutAppend 实现
