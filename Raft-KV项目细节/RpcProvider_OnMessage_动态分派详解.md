@@ -13,15 +13,15 @@
 
 这是理解动态调用最重要的边界。你不需要、也不应该手写“按 `method->index()` 调 `Get`”的代码；那一层已经由 `protoc` 根据 `.proto` 自动生成。
 
-| 部分 | 文件或类型 | 由谁提供 | 你是否应该修改 | 职责 |
-| --- | --- | --- | --- | --- |
-| RPC 接口契约 | `src/raftRpcPro/kvServerRPC.proto` | 你 | 是，新增/修改 RPC 的唯一入口 | 声明服务、方法、请求和响应消息。 |
-| 服务端接口、Stub、描述符、`CallMethod` | `kvServerRPC.pb.h` / `.pb.cc` | `protoc` | 否 | 把 `.proto` 翻译成 C++ 类型、元数据与“描述符 -> 强类型虚函数”的分派代码。 |
-| 业务服务 | `KvServer : kvServerRpc`，其 `Get` / `PutAppend` 重写 | 你 | 是 | 写真正的业务逻辑，并在结果写入 `response` 后执行 `done->Run()`。 |
-| 通用客户端传输 | `MprpcChannel` | 你 | 是 | 将 Stub 给出的描述符和消息编码为字节，发送并把响应字节写回调用方的 `reply`。 |
-| 通用服务端传输与路由 | `RpcProvider` | 你 | 是 | 注册 Service、解帧、查找描述符、创建消息、交给 `Service::CallMethod`、回包。 |
-| 网络事件与发送 | Muduo `TcpServer` / `TcpConnection` | Muduo | 通常否 | 在收到字节时调 `OnMessage`，并提供 `conn->send`。 |
-| 反射接口、消息序列化、Closure | Protobuf 库 | Protobuf | 否 | 提供 `Service`、`Message`、描述符、`NewCallback` 等基础能力。 |
+| 部分                          | 文件或类型                                             | 由谁提供     | 你是否应该修改           | 职责                                                    |
+| --------------------------- | ------------------------------------------------- | -------- | ----------------- | ----------------------------------------------------- |
+| RPC 接口契约                    | `src/raftRpcPro/kvServerRPC.proto`                | 你        | 是，新增/修改 RPC 的唯一入口 | 声明服务、方法、请求和响应消息。                                      |
+| 服务端接口、Stub、描述符、`CallMethod` | `kvServerRPC.pb.h` / `.pb.cc`                     | `protoc` | 否                 | 把 `.proto` 翻译成 C++ 类型、元数据与“描述符 -> 强类型虚函数”的分派代码。       |
+| 业务服务                        | `KvServer : kvServerRpc`，其 `Get` / `PutAppend` 重写 | 你        | 是                 | 写真正的业务逻辑，并在结果写入 `response` 后执行 `done->Run()`。         |
+| 通用客户端传输                     | `MprpcChannel`                                    | 你        | 是                 | 将 Stub 给出的描述符和消息编码为字节，发送并把响应字节写回调用方的 `reply`。         |
+| 通用服务端传输与路由                  | `RpcProvider`                                     | 你        | 是                 | 注册 Service、解帧、查找描述符、创建消息、交给 `Service::CallMethod`、回包。 |
+| 网络事件与发送                     | Muduo `TcpServer` / `TcpConnection`               | Muduo    | 通常否               | 在收到字节时调 `OnMessage`，并提供 `conn->send`。                 |
+| 反射接口、消息序列化、Closure          | Protobuf 库                                        | Protobuf | 否                 | 提供 `Service`、`Message`、描述符、`NewCallback` 等基础能力。       |
 
 特别注意两层“动态”：
 
