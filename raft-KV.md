@@ -294,5 +294,12 @@ void RpcProvider::OnMessage(
 - `conn`：这次请求来自的 TCP 连接。后续响应必须沿这条连接写回。
 - `buffer`：Muduo 已收到、尚未消费的字节。
 - `Timestamp`：消息到达时间；可以写入日志分析。
+
+整体 OnMessage() 流程：
 ![[RpcProvider的解析相应.excalidraw|500]]
+### RPC接收方解析 + 动态分配详解
+1. `OnMessage` 先用请求中的 `service_name` 和 `method_name` 查两层表，取得 `google::protobuf::Service*` 与 `MethodDescriptor*`。
+2. `service->CallMethod(...)` 是 Protobuf 的反射入口。对于 `kvServerRpc`，生成代码内部按方法下标 `switch`，再通过 C++ 虚函数调用最终的 `KvServer::Get` 或 `KvServer::PutAppend`。
+3. `done` 不是业务返回值，而是框架预先绑定好的“响应发送动作”。业务方法完成并调用 `done->Run()` 后，才会序列化 `reply` 并通过原来的 TCP 连接发回。
+
 ## 服务端的响应 -- KVServer
