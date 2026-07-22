@@ -212,7 +212,7 @@ cmake --build build --target provider consumer -j
 
 那么当一个 `clerk` 下发一次指令如'Put'、'Get'、‘Appen'时，集群内部是怎样接受的呢？
 ## RPC的传输 -- MprpcChannel
-在实现客户端与服务器的RPC沟通时，`protobuf` 的 `stub` 如何知道我该怎样发送一个信息，如何在中间插入更多的功能呢？那么就需要利用到 `Protobuf` 官方提供的是一套“可插拔 RPC”接口。官方在 stub 的调用中使用了一个纯虚类 `RpcChannel`的接口虚函数：
+在实现**客户端**与**服务器**的RPC沟通时，`protobuf` 的 `stub` 如何知道我该怎样发送一个信息，如何在中间插入更多的功能呢？那么就需要利用到 `Protobuf` 官方提供的是一套“可插拔 RPC”接口。官方在 stub 的调用中使用了一个纯虚类 `RpcChannel`的接口虚函数：
 ``` c++
 channel_->CallMethod(method descriptor, request, response, ...);
 ```
@@ -229,3 +229,70 @@ Clerk
   -> TCP connect/send/recv
   -> RpcProvider（服务端项目手写）
   -> kvServerRpc 的 Get / PutAppend 实现
+
+那么客户端的 `CallMethod` 目的就是把调用远端 `kvServerRpc.method` 变成 TCP 字节流。
+-  根据 Raft 集群初始化时得到的 Ip + port，构建TCP连接与套接字fd
+-  构建实际发送的字节串：varint32(header_size) + protobuf(RpcHeader) + protobuf(GetArgs)
+	- 实际内容是：头长度 + 服务名、方法名、参数长度 + 业务请求参数
+-  利用 `send()` 发送给目标 IP 与 port。
+-  利用 `recv()` 同步等待返回内容
+-  最终利用 `ParseFromArray()` 反序列化内容后返回给 `response`
+
+那么发送出了RPC后，服务端该如何响应呢？
+![[RPC沟通|1000]]
+## RPC的接收 -- RpcProvider
+`RpcProvider` 是项目中 RPC 的服务端框架：它把本地的 Protobuf 服务对象发布到 TCP 网络上，让其他进程能够按“服务名 + 方法名”远程调用。
+
+它的主要工作是：
+1. `NotifyService`：通过 Protobuf 反射读取服务及方法描述符，注册到 `m_serviceMap`。例如 `KvServer` 同时注册 KV 服务和 `Raft` 服务。
+2. `Run`：创建并启动 Muduo `TcpServer`，监听指定端口，同时将节点 IP/端口写入节点信息文件，供其他 Raft 节点发现。
+3. `OnMessage`：收到 TCP 字节后，解析请求头中的服务名、方法名和参数长度；查找已注册服务，反序列化参数，并通过 `service->CallMethod(...)` 反射调用真正的本地业务函数。
+4. `SendRpcResponse`：业务方法完成后，将 Protobuf 响应序列化并通过原 TCP 连接返回调用方。
+
+在 `KvServer` 中，它同时暴露 `KvServer` 的 `Get`/`PutAppend` 和 `Raft` 的节点间 RPC，因此 Clerk 到 KV 服务、以及 Raft 节点之间的 `RequestVote`、`AppendEntries` 都会经过它。
+
+简言之：`MprpcChannel` 负责客户端“把函数调用发出去”，`RpcProvider` 负责服务端“接收请求、找到函数、执行并返回结果”。
+### NotifyService()
+它只接受 Protobuf 的服务基类指针 `google::protobuf::Service*`。具体做了三件事：
+1. `service->GetDescriptor()` 取得服务描述，例如 `kvServerRpc` 或 `raftRpc`。
+2. 遍历该服务在 `.proto` 中声明的全部 RPC 方法，把 `方法名 -> MethodDescriptor` 保存下来。
+3. 保存 `服务名 -> {服务对象指针, 方法表}` 到 `m_serviceMap`。
+
+所以注册完成后的结构近似于：
+```
+kvServerRpc
+  service: KvServer*
+  methods: PutAppend, Get
+
+raftRpc
+  service: Raft*
+  methods: AppendEntries, InstallSnapshot, RequestVote
+```
+之后 `RpcProvider` 的 `OnMessage` 从请求中解析出服务名和方法名，查这张表，最终执行：
+`service->CallMethod(method, ..., request, response, done);`
+Protobuf 生成的 `CallMethod` 会继续动态分派到在 `KvServer` 或 `Raft` 中重写的实际业务函数。
+### Run()
+在 `KvServer` 中，会单独开一个后台线程(`thread t.detach()`)，在后台建成监听该节点的远端RPC请求。 而 `Run()` 函数的作用就是注册监听与回调到 Muduo 库内，把已经注册好的 Protobuf 服务真正变成一个可被网络访问的 RPC 服务端。
+	 它负责完成“地址发布、创建 TCP Server、绑定回调、启动事件循环”这四件事。
+![[RpcProvider的Run函数监听流程.excalidraw|400]]
+最终，`Run()` 将之前只存在于内存路由表中的：
+```
+kvServerRpc -> KvServer
+raftRpc     -> Raft
+```
+接到 `127.0.1.1:port` 这个 TCP 入口上。客户端或其他 Raft 节点的请求到达后，才会进入 `OnMessage()`，并按照服务名和方法名分派到对应对象。
+### 最重要的方法调用 -- OnMessage()
+`OnMessage` 是 `RpcProvider` 的“服务端请求分派器”。Muduo 在某个 TCP 连接收到数据时调用它；它把字节流还原成一次 RPC 调用，定位已注册的服务和方法，执行本地业务函数，并安排响应返回。
+
+从函数定义开始：
+```
+void RpcProvider::OnMessage(
+    const muduo::net::TcpConnectionPtr& conn,
+    muduo::net::Buffer* buffer,
+    muduo::Timestamp)
+```
+- `conn`：这次请求来自的 TCP 连接。后续响应必须沿这条连接写回。
+- `buffer`：Muduo 已收到、尚未消费的字节。
+- `Timestamp`：消息到达时间；可以写入日志分析。
+![[RpcProvider的解析相应.excalidraw|500]]
+## 服务端的响应 -- KVServer
