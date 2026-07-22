@@ -302,4 +302,11 @@ void RpcProvider::OnMessage(
 2. `service->CallMethod(...)` 是 Protobuf 的反射入口。对于 `kvServerRpc`，生成代码内部按方法下标 `switch`，再通过 C++ 虚函数调用最终的 `KvServer::Get` 或 `KvServer::PutAppend`。
 3. `done` 不是业务返回值，而是框架预先绑定好的“响应发送动作”。业务方法完成并调用 `done->Run()` 后，才会序列化 `reply` 并通过原来的 TCP 连接发回。
 
+其实整个 `RpcProvider` 在做的事情就是在 `NotifyService()` 注册需要监听的 `RpcService` 的名称以及该 `Service` 下的 `method` 路由表。
+在实现了路由表后，`RpcProvider`的解析：`OnMessage()` 在做的就是利用客户端写入的 RpcHeader 来解析 请求方法字节流，最后写入 `CallMethod()` 利用 `protocol` 官方的 `pb.cc` 实现动态路由，触发本地方法。
+```c++
+google::protobuf::Message *request = service->GetRequestPrototype(method).New();
+// args_str 是前期从 Rpc 中解析出来的 方法字节
+request->ParseFromString(args_str); // 反序列化 获得请求方法 request
+```
 ## 服务端的响应 -- KVServer
