@@ -3,3 +3,7 @@
 .obsidiancache
 .DS_Store
 .obsidian/plugins/
+**/.obsidian/workspace.json
+**/.obsidian/workspace-mobile.json
+**/.obsidian/workspaces.json
+**/.obsidian/cache/
