@@ -106,40 +106,40 @@ stub_ = new raftRpcProctoc::raftRpc_Stub(new MprpcChannel(ip, port, true));
 
 ### `KvServer` 的成员
 
-| 成员 | 定义位置 | 含义 | 何时使用 |
-| --- | --- | --- | --- |
-| `m_mtx` | `kvServer.h:27` | KV 服务自己的互斥锁 | 保护状态机、去重表和等待表 |
-| `m_me` | `:28` | 当前节点编号 | 日志、配置和 RPC 服务启动 |
-| `m_raftNode` | `:29` | 当前节点内嵌的 Raft 核心 | 客户端请求调用 `Start`；快照调用 Raft 接口 |
-| `applyChan` | `:30` | `Raft -> KvServer` 的阻塞队列 | Raft 只把已提交命令放入这里 |
-| `m_maxRaftState` | `:31` | 希望控制 Raft 状态大小的阈值 | 决定是否请求制作快照 |
-| `m_skipList` | `:35` | 当前真正使用的本地 KV 容器 | `Put`、`Append`、`Get` 和快照 |
-| `m_kvDB` | `:36` | 另一个 `unordered_map` 版本的 KV 容器 | 当前实现中相关代码被注释，没有参与实际读写 |
-| `waitApplyCh` | `:38` | `raftIndex -> LockQueue<Op>*` 映射 | 让一个 RPC 请求等待“自己的日志已提交” |
-| `m_lastRequestId` | `:41` | `clientId -> 最大 requestId` | 客户端重试时避免重复写入 |
-| `m_lastSnapShotRaftLogIndex` | `:44` | 已装入状态机的快照边界 | 忽略该边界之前再次送来的日志 |
+| 成员                           | 定义位置            | 含义                               | 何时使用                         |
+| ---------------------------- | --------------- | -------------------------------- | ---------------------------- |
+| `m_mtx`                      | `kvServer.h:27` | KV 服务自己的互斥锁                      | 保护状态机、去重表和等待表                |
+| `m_me`                       | `:28`           | 当前节点编号                           | 日志、配置和 RPC 服务启动              |
+| `m_raftNode`                 | `:29`           | 当前节点内嵌的 Raft 核心                  | 客户端请求调用 `Start`；快照调用 Raft 接口 |
+| `applyChan`                  | `:30`           | `Raft -> KvServer` 的阻塞队列         | Raft 只把已提交命令放入这里             |
+| `m_maxRaftState`             | `:31`           | 希望控制 Raft 状态大小的阈值                | 决定是否请求制作快照                   |
+| `m_skipList`                 | `:35`           | 当前真正使用的本地 KV 容器                  | `Put`、`Append`、`Get` 和快照     |
+| `m_kvDB`                     | `:36`           | 另一个 `unordered_map` 版本的 KV 容器    | 当前实现中相关代码被注释，没有参与实际读写        |
+| `waitApplyCh`                | `:38`           | `raftIndex -> LockQueue<Op>*` 映射 | 让一个 RPC 请求等待“自己的日志已提交”       |
+| `m_lastRequestId`            | `:41`           | `clientId -> 最大 requestId`       | 客户端重试时避免重复写入                 |
+| `m_lastSnapShotRaftLogIndex` | `:44`           | 已装入状态机的快照边界                      | 忽略该边界之前再次送来的日志               |
 
 有一个容易误读的细节：构造函数里的 `m_skipList;`、`waitApplyCh;`、`m_lastRequestId;` 只是表达式语句，不是重新初始化。它们本来已经由成员默认构造完成。真正显式赋值的是 `m_lastSnapShotRaftLogIndex = 0`。
 
 ### `Raft` 的成员
 
-| 成员 | 含义 | 为什么重要 |
-| --- | --- | --- |
-| `m_peers` | 指向其他节点的 `RaftRpcUtil` 列表 | 所有节点间 RPC 的出口 |
-| `m_persister` | 本节点的文件持久化器 | 保存 Raft 状态和快照 |
-| `m_me` | 本节点编号 | 确定自己在 `m_peers` 中的位置 |
-| `m_currentTerm` | 当前任期 | 识别新旧领导者，Raft 的第一层安全边界 |
-| `m_votedFor` | 当前任期投给谁 | 保证每个节点每任期至多投一票 |
-| `m_logs` | 尚未被快照截断的日志 | 保存待复制、待提交的 `Op` 命令 |
-| `m_commitIndex` | 已被多数派确认的最大日志索引 | 不大于它的日志才允许交给状态机 |
-| `m_lastApplied` | 已经交给状态机的最大日志索引 | 防止同一条日志重复投递 |
-| `m_nextIndex[i]` | 领导者下次要向节点 `i` 发送的日志索引 | 日志不匹配时向前回退并重试 |
-| `m_matchIndex[i]` | 已确认节点 `i` 拥有的最大日志索引 | 帮助领导者判断是否已有多数副本 |
-| `m_status` | `Follower`、`Candidate` 或 `Leader` | 决定节点会等待、拉票还是复制日志 |
-| `applyChan` | 与 `KvServer` 共享的应用队列 | 把“已提交”转化为“执行到状态机” |
-| 两个时间点 | 选举和心跳的最近重置时间 | 驱动选举超时和领导者心跳 |
-| 快照索引与任期 | `m_lastSnapshotIncludeIndex/Term` | 说明被截断日志的边界，维持日志索引连续性 |
-| `m_ioManager` | 协程调度器 | 运行选举超时和心跳定时循环 |
+| 成员                | 含义                                | 为什么重要                 |
+| ----------------- | --------------------------------- | --------------------- |
+| `m_peers`         | 指向其他节点的 `RaftRpcUtil` 列表          | 所有节点间 RPC 的出口         |
+| `m_persister`     | 本节点的文件持久化器                        | 保存 Raft 状态和快照         |
+| `m_me`            | 本节点编号                             | 确定自己在 `m_peers` 中的位置  |
+| `m_currentTerm`   | 当前任期                              | 识别新旧领导者，Raft 的第一层安全边界 |
+| `m_votedFor`      | 当前任期投给谁                           | 保证每个节点每任期至多投一票        |
+| `m_logs`          | 尚未被快照截断的日志                        | 保存待复制、待提交的 `Op` 命令    |
+| `m_commitIndex`   | 已被多数派确认的最大日志索引                    | 不大于它的日志才允许交给状态机       |
+| `m_lastApplied`   | 已经交给状态机的最大日志索引                    | 防止同一条日志重复投递           |
+| `m_nextIndex[i]`  | 领导者下次要向节点 `i` 发送的日志索引             | 日志不匹配时向前回退并重试         |
+| `m_matchIndex[i]` | 已确认节点 `i` 拥有的最大日志索引               | 帮助领导者判断是否已有多数副本       |
+| `m_status`        | `Follower`、`Candidate` 或 `Leader` | 决定节点会等待、拉票还是复制日志      |
+| `applyChan`       | 与 `KvServer` 共享的应用队列              | 把“已提交”转化为“执行到状态机”     |
+| 两个时间点             | 选举和心跳的最近重置时间                      | 驱动选举超时和领导者心跳          |
+| 快照索引与任期           | `m_lastSnapshotIncludeIndex/Term` | 说明被截断日志的边界，维持日志索引连续性  |
+| `m_ioManager`     | 协程调度器                             | 运行选举超时和心跳定时循环         |
 
 最需要牢记的三个索引不是一回事：
 

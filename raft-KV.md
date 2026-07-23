@@ -309,5 +309,60 @@ google::protobuf::Message *request = service->GetRequestPrototype(method).New();
 // args_str 是前期从 Rpc 中解析出来的 方法字节
 request->ParseFromString(args_str); // 反序列化 获得请求方法 request
 ```
-最后 OnMessage() 还实现了注册回调，利用 `done->Run()` 实现了发送了。
+最后 OnMessage() 还实现了注册回调，利用 `done->Run()` 实现了发送。
 ## 服务端的响应 -- KVServer
+在构建分布式集群时，会 `fork()` 出子进程，每个子进程都是一个 `raft节点`，每个节点内都构建有一个 `KVServer`，这个 `KVServer` 注册了两种 RPC：
+- 与客户端沟通的 :KvServerRPC
+- 与其他 Raft 节点沟通的：raftRPC
+
+之后 该节点初始化了 Raft节点，注册了与其他节点的连接。同时注册了该节点底层的跳表，该跳表只会在集群对某一OP实现**多数实现**后，才会修改本地KV状态机。
+最后，`KVServer` 构造了一线程单独循环：`ReadRaftApplyCommandLoop()`，**阻塞等待**底层返回日志信息，用于将 `ApplyMsg` 的日志**持久化到** `skiplist`。
+
+一个进程只创建一个 `KvServer`，但这个对象同时带着两层服务：
+
+```mermaid
+flowchart LR
+  C[Clerk: 客户端] -->|Get / PutAppend RPC| K[KvServer]
+  K -->|Start: 把 Op 写入日志| R[Raft]
+  R <-->|RequestVote / AppendEntries / InstallSnapshot| P[其他 Raft 节点]
+  R -->|ApplyMsg 队列| K
+  K -->|执行已提交命令| S[SkipList: KV 状态机]
+  R <-->|Raft 状态与快照| D[Persister: 本地文件]
+  K -->|快照内容| D
+```
+
+其中最重要的边界是：
+
+- `KvServer` 不自己决定命令顺序。它把业务命令交给 `Raft`。
+- `Raft` 不理解 key 和 value。它只负责让各节点以相同顺序提交命令。
+- 只有命令经 `Raft` 提交，并通过 `ApplyMsg` 返回后，`KvServer` 才修改本地 KV 状态机。
+
+这就是“复制状态机”：每个节点执行相同命令序列，因此得到相同的 KV 数据。
+
+`KvServer` 是 Raft 的上层复制状态机。它与所组合的 `Raft` 节点主要通过“直接方法调用 + 共享 ApplyMsg 队列”沟通。KvServer 与其组合的 Raft 节点有如下沟通方式：
+
+| 方向               | 沟通方法                                                     | 功能                                                                                                         |
+| ---------------- | -------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------- |
+| KvServer -> Raft | `Raft::Start(op, &index, &term, &isLeader)`              | `Get`、`Put`、`Append` 都先封装为 `Op` 并提交 Raft。仅 Leader 接受；返回日志索引供随后等待对应提交结果。                                    |
+| KvServer -> Raft | `Raft::GetState(&term, &isLeader)`                       | `Get` 等待提交超时时，重新确认本节点是否还是 Leader；否则向 Clerk 返回 `ErrWrongLeader` 触发重试。                                       |
+| KvServer -> Raft | `Raft::GetRaftStateSize()`、`Raft::Snapshot(index, data)` | KV 状态机发现 Raft 持久化状态超过阈值后，序列化跳表和去重记录为快照，通知 Raft 持久化快照并截断已覆盖日志。                                              |
+| 初始化边界            | `Raft::init(..., persister, applyChan)`                  | `KvServer` 创建 Raft、共享持久化器和 `applyChan`，将这些依赖注入 Raft，建立状态机投递通路。                                             |
+完整的一次请求简述如下：
+Clerk RPC -> KvServer::PutAppend
+          -> Raft::Start(op)
+          -> Raft 达成提交
+          -> applyChan: ApplyMsg
+          -> KvServer::GetCommandFromRaft
+          -> 执行 SkipList 写入、去重、唤醒等待该日志索引的 RPC
+
+其中 `waitApplyCh[index]` 是 `KvServer` 内部的“按 Raft 日志索引等待完成”机制：Raft 并不直接回调客户端 RPC；KV 层收到 `ApplyMsg` 后，通过 `SendMessageToWaitChan` 通知最初提交该请求的处理函数。
+
+最后，KvServer内带有两个小模块：
+1. ApplyMsg` 是 Raft 和业务状态机之间唯一的数据边界：
+	- `CommandValid == true`：`Command` 中是可执行的序列化 `Op`，`CommandIndex` 是其 Raft 日志索引；
+	- `SnapshotValid == true`：携带快照数据、边界任期和边界索引。
+
+2. `Persister` 保存两块内容：
+	- Raft 自己的元数据和日志：任期、投票对象、快照边界、日志；
+	- 由 `KvServer` 制作的状态机快照：跳表内容和去重表。
+## Server下Raft语义的实现 -- Raft
