@@ -357,7 +357,7 @@ Clerk RPC -> KvServer::PutAppend
 
 其中 `waitApplyCh[index]` 是 `KvServer` 内部的“按 Raft 日志索引等待完成”机制：Raft 并不直接回调客户端 RPC；KV 层收到 `ApplyMsg` 后，通过 `SendMessageToWaitChan` 通知最初提交该请求的处理函数。
 
-最后，KvServer内带有两个小模块：
+最后，KvServer内带有两个小模块：Apply与Msg 这两者是Raft与KvServer的沟通与联系
 1. ApplyMsg` 是 Raft 和业务状态机之间唯一的数据边界：
 	- `CommandValid == true`：`Command` 中是可执行的序列化 `Op`，`CommandIndex` 是其 Raft 日志索引；
 	- `SnapshotValid == true`：携带快照数据、边界任期和边界索引。
@@ -366,3 +366,22 @@ Clerk RPC -> KvServer::PutAppend
 	- Raft 自己的元数据和日志：任期、投票对象、快照边界、日志；
 	- 由 `KvServer` 制作的状态机快照：跳表内容和去重表。
 ## Server下Raft语义的实现 -- Raft
+### `Raft` 的成员
+
+| 成员                | 含义                                | 目的                    |
+| ----------------- | --------------------------------- | --------------------- |
+| `m_peers`         | 指向其他节点的 `RaftRpcUtil` 列表          | 所有节点间 RPC 的出口         |
+| `m_persister`     | 本节点的文件持久化器                        | 保存 Raft 状态和快照         |
+| `m_me`            | 本节点编号                             | 确定自己在 `m_peers` 中的位置  |
+| `m_currentTerm`   | 当前任期                              | 识别新旧领导者，Raft 的第一层安全边界 |
+| `m_votedFor`      | 当前任期投给谁                           | 保证每个节点每任期至多投一票        |
+| `m_logs`          | 尚未被快照截断的日志                        | 保存待复制、待提交的 `Op` 命令    |
+| `m_commitIndex`   | 已被多数派确认的最大日志索引                    | 不大于它的日志才允许交给状态机       |
+| `m_lastApplied`   | 已经交给状态机的最大日志索引                    | 防止同一条日志重复投递           |
+| `m_nextIndex[i]`  | 领导者下次要向节点 `i` 发送的日志索引             | 日志不匹配时向前回退并重试         |
+| `m_matchIndex[i]` | 已确认节点 `i` 拥有的最大日志索引               | 帮助领导者判断是否已有多数副本       |
+| `m_status`        | `Follower`、`Candidate` 或 `Leader` | 决定节点会等待、拉票还是复制日志      |
+| `applyChan`       | 与 `KvServer` 共享的应用队列              | 把“已提交”转化为“执行到状态机”     |
+| 两个时间点             | 选举和心跳的最近重置时间                      | 驱动选举超时和领导者心跳          |
+| 快照索引与任期           | `m_lastSnapshotIncludeIndex/Term` | 说明被截断日志的边界，维持日志索引连续性  |
+| `m_ioManager`     | 协程调度器                             | 运行选举超时和心跳定时循环         |
