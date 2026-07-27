@@ -385,3 +385,58 @@ Clerk RPC -> KvServer::PutAppend
 | 两个时间点             | 选举和心跳的最近重置时间                      | 驱动选举超时和领导者心跳          |
 | 快照索引与任期           | `m_lastSnapshotIncludeIndex/Term` | 说明被截断日志的边界，维持日志索引连续性  |
 | `m_ioManager`     | 协程调度器                             | 运行选举超时和心跳定时循环         |
+### Raft所处的位置
+`KvServer` 是 **Raft 上层的复制状态机适配器**：它不直接把 RPC 写入本地数据库，而是先把请求包装成 `Op` 交给 **`Raft`**；只有该日志被多数节点提交、Raft 通过 `ApplyMsg` 交回后，它才修改本地 KV 数据。
+
+因此可以说，**`Raft`** 就是这个 KvServer 的核底层心，上层只控制发送，而下层要根据指令，做出集群处理：多数派表决，才能认可这个指令是否成功，能否提交、写入日志、写入 KV-base。
+### Raft整体数据流
+```mermaid
+sequenceDiagram
+  participant C as Clerk
+  participant K as KvServer
+  participant R as Raft
+  participant Q as applyChan
+  participant S as SkipList 状态机
+
+  C->>K: Get / PutAppend(ClientId, RequestId)
+  K->>R: Start(Op)
+  alt 本节点不是 Leader
+    R-->>K: isLeader = false
+    K-->>C: ErrWrongLeader
+    C->>C: 换节点，用相同请求号重试
+  else 是 Leader
+    R-->>K: raftIndex
+    K->>K: 创建 waitApplyCh[raftIndex]
+    R->>R: 复制并提交日志
+    R->>Q: ApplyMsg(Command, CommandIndex)
+    Q->>K: ReadRaftApplyCommandLoop
+    K->>S: 按 Op 应用状态机
+    K->>K: 唤醒 waitApplyCh[raftIndex]
+    K-->>C: OK / ErrNoKey
+  end
+```
+这里最重要的关联键是 **Raft 日志索引**：`waitApplyCh[raftIndex]` 把一次 RPC 与同一条日志的应用结果关联起来。接到通知后，RPC 处理函数还会比较 `ClientId` 和 `RequestId`，防止 Leader 更替后同一索引已被别的日志占用而误报成功。
+### Raft Init()
+`Raft::init` 是单个 Raft 节点的启动入口，由 KV Server 在建立好所有节点的 RPC 连接后调用。
+它主要完成：
+
+1. 保存运行依赖：保存集群节点 `peers`、当前节点编号 `me`、持久化器 `persister`，以及向 KV 状态机投递已提交日志的 `applyChan`。
+2. 建立初始 Raft 状态：节点初始为 `Follower`，任期 `0`，未投票 `votedFor = -1`，`commitIndex` 与 `lastApplied` 为 `0`，日志清空。
+3. 初始化 Leader 专用复制进度：为每个节点设置 `matchIndex` 和 `nextIndex`，初值都是 `0`。真正成为 Leader 后会依靠这些数组跟踪各 Follower 的日志同步位置。
+4. 初始化快照和计时器：快照边界设为 `(index=0, term=0)`，同时重置选举计时器与心跳计时器，避免节点一启动就立即发起选举或心跳。
+5. 从磁盘恢复：调用 `readPersist` 读取已保存的 `currentTerm`、`votedFor`、快照边界和日志；若已有快照，将 `lastApplied` 推进到快照索引，防止把快照前的日志再次交给状态机。
+6. 启动后台循环：
+    - `leaderHearBeatTicker`：节点成为 Leader 后定期发送心跳/日志。
+    - `electionTimeOutTicker`：Follower/Candidate 超时后发起选举。
+    - `applierTicker`：持续把 `[lastApplied + 1, commitIndex]` 的已提交日志推送给 KV Server。
+
+可以概括为：
+```
+接入 RPC、持久化器和状态机队列
+        ↓
+创建内存中的 Follower 初始状态
+        ↓
+恢复崩溃前保存的任期、投票、日志、快照元数据
+        ↓
+启动选举、心跳、日志应用三条后台执行路径
+```
