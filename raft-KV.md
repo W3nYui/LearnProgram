@@ -341,12 +341,12 @@ flowchart LR
 
 `KvServer` 是 Raft 的上层复制状态机。它与所组合的 `Raft` 节点主要通过“直接方法调用 + 共享 ApplyMsg 队列”沟通。KvServer 与其组合的 Raft 节点有如下沟通方式：
 
-| 方向               | 沟通方法                                                     | 功能                                                                                                         |
-| ---------------- | -------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------- |
-| KvServer -> Raft | `Raft::Start(op, &index, &term, &isLeader)`              | `Get`、`Put`、`Append` 都先封装为 `Op` 并提交 Raft。仅 Leader 接受；返回日志索引供随后等待对应提交结果。                                    |
-| KvServer -> Raft | `Raft::GetState(&term, &isLeader)`                       | `Get` 等待提交超时时，重新确认本节点是否还是 Leader；否则向 Clerk 返回 `ErrWrongLeader` 触发重试。                                       |
-| KvServer -> Raft | `Raft::GetRaftStateSize()`、`Raft::Snapshot(index, data)` | KV 状态机发现 Raft 持久化状态超过阈值后，序列化跳表和去重记录为快照，通知 Raft 持久化快照并截断已覆盖日志。                                              |
-| 初始化边界            | `Raft::init(..., persister, applyChan)`                  | `KvServer` 创建 Raft、共享持久化器和 `applyChan`，将这些依赖注入 Raft，建立状态机投递通路。                                             |
+| 方向               | 沟通方法                                                     | 功能                                                                      |
+| ---------------- | -------------------------------------------------------- | ----------------------------------------------------------------------- |
+| KvServer -> Raft | `Raft::Start(op, &index, &term, &isLeader)`              | `Get`、`Put`、`Append` 都先封装为 `Op` 并提交 Raft。仅 Leader 接受；返回日志索引供随后等待对应提交结果。 |
+| KvServer -> Raft | `Raft::GetState(&term, &isLeader)`                       | `Get` 等待提交超时时，重新确认本节点是否还是 Leader；否则向 Clerk 返回 `ErrWrongLeader` 触发重试。    |
+| KvServer -> Raft | `Raft::GetRaftStateSize()`、`Raft::Snapshot(index, data)` | KV 状态机发现 Raft 持久化状态超过阈值后，序列化跳表和去重记录为快照，通知 Raft 持久化快照并截断已覆盖日志。           |
+| 初始化边界            | `Raft::init(..., persister, applyChan)`                  | `KvServer` 创建 Raft、共享持久化器和 `applyChan`，将这些依赖注入 Raft，建立状态机投递通路。          |
 完整的一次请求简述如下：
 Clerk RPC -> KvServer::PutAppend
           -> Raft::Start(op)
@@ -365,6 +365,24 @@ Clerk RPC -> KvServer::PutAppend
 2. `Persister` 保存两块内容：
 	- Raft 自己的元数据和日志：任期、投票对象、快照边界、日志；
 	- 由 `KvServer` 制作的状态机快照：跳表内容和去重表。
+### KvServer 与 Clerk 的RPC沟通
+#### `PutAppend`
+协议：`PutAppend(PutAppendArgs) -> PutAppendReply`。
+
+参数包括：
+- `Key`、`Value`
+- `Op`：`Put` 或 `Append`
+- `ClientId`、`RequestId`：请求唯一标识，用于去重
+
+KvServer 不会直接改跳表，而是先将操作包装成 `Op`，调用本地 `m_raftNode->Start(...)` 进入 Raft 日志。只有 Leader 能接受；非 Leader 返回 `ErrWrongLeader`。之后它等待对应日志索引被 Raft 应用，应用线程再通过 `ClientId + RequestId` 防止网络重试导致重复写入。
+
+#### `Get`
+协议：`Get(GetArgs) -> GetReply`。
+
+它带有 `Key`、`ClientId`、`RequestId`，返回 `Err` 和 `Value`。这个项目的 `Get` 也会先调用 `Raft::Start()`，即把读请求放入 Raft 日志并等待应用，而不是直接从本地跳表读取。这样只有确认自己仍是有效 Leader 的节点才会对外提供读结果，以此维护线性一致性。
+
+最后，RPC 调用完成并不等于 KV 命令已经执行：`PutAppend`/`Get` 先经 Raft 复制和提交，再由 `getApplyLogs()` 通过 `applyChan` 交给 `KvServer::ReadRaftApplyCommandLoop()` 执行。这里的 RPC 是“提交请求的入口”，`ApplyMsg` 队列才是 Raft 与状态机之间的本地交接边界。
+
 ## Server下Raft语义的实现 -- Raft
 ### `Raft` 的成员
 
@@ -428,7 +446,7 @@ sequenceDiagram
 6. 启动后台循环：
     - `leaderHearBeatTicker`：节点成为 Leader 后定期发送心跳/日志。
     - `electionTimeOutTicker`：Follower/Candidate 超时后发起选举。
-    - `applierTicker`：持续把 `[lastApplied + 1, commitIndex]` 的已提交日志推送给 KV Server。
+    - `applierTicker`：持续把 `[lastApplied + 1, commitIndex]` 的已提交日志推送给 KV Server。 这里需要完整而的理解：Raft节点先提交Log,而后再由线程获取当前节点内的 “**可以执行但还没执行**”的日志
 
 可以概括为：
 ```
@@ -440,3 +458,55 @@ sequenceDiagram
         ↓
 启动选举、心跳、日志应用三条后台执行路径
 ```
+
+需要注意的内容：Raft、日志、KvServer(状态机)的各个log更新状态。
+
+|阶段|关键状态|含义|
+|---|---|---|
+|1. 本地持久化日志|`m_logs` + `persist()`|节点先把日志写进自己的稳定存储，崩溃后可恢复|
+|2. Raft 提交|`m_commitIndex`|多数副本确认后，这条日志被认定为不可撤销、可以执行|
+|3. 应用到状态机|`m_lastApplied`|已提交日志被包装为 `ApplyMsg`，交给 KV Server 执行|
+### Raft节点间的RPC沟通
+#### `RequestVote`  超时选举
+协议：`RequestVote(RequestVoteArgs) -> RequestVoteReply`。
+
+Candidate 会带上：
+- `Term`：自己发起选举的任期。
+- `CandidateId`：候选人编号。
+- `LastLogIndex`、`LastLogTerm`：候选人最后一条日志的位置和任期。
+
+接收方在函数中检查：
+1. Candidate 的任期是否过旧。
+2. 本任期是否已经投过票。
+3. Candidate 的日志是否至少和自己一样新。
+
+满足条件才返回 `VoteGranted = true`。Candidate 收到多数票后成为 Leader。发送端封装在 `sendRequestVote()`，实际通过 `m_peers[server]->RequestVote(...)` 发起远程调用。
+
+#### `AppendEntries`  心跳包与沟通包
+协议：`AppendEntries(AppendEntriesArgs) -> AppendEntriesReply`。
+
+这是 Raft 最核心的 RPC，有三项职责：
+1. **心跳**：`Entries` 为空时，Leader 仍周期性发送它，以维持领导权。
+2. **日志复制**：`Entries` 非空时，Follower 验证前置日志后追加或覆盖冲突日志。
+3. **传播提交进度**：`LeaderCommit` 告诉 Follower Leader 已提交到哪里；Follower 将自己的 `m_commitIndex` 推进到 `min(LeaderCommit, lastLogIndex)`。
+
+请求中的关键字段：
+- `PrevLogIndex`、`PrevLogTerm`：证明即将追加的日志前面存在共同前缀。
+- `Entries`：要复制的日志条目。
+- `LeaderCommit`：Leader 已提交的最大索引。
+
+如果前置日志不匹配，Follower 返回 `Success = false` 和 `UpdateNextIndex`。Leader 据此回退该 Follower 的 `nextIndex`，再发送更早的日志，直到两边重新对齐。接收端实际逻辑是 `AppendEntries1()`。
+
+#### `InstallSnapshot`  快速恢复
+协议：`InstallSnapshot(InstallSnapshotRequest) -> InstallSnapshotResponse`。
+
+当 Leader 发现某个 Follower 的 `nextIndex` 已落在 Leader 快照边界之前，就不能仅靠旧日志追赶，改为调用此 RPC。
+
+请求包含：
+- `LastSnapShotIncludeIndex`、`LastSnapShotIncludeTerm`：快照覆盖到哪条日志。
+- `Data`：KV 状态机快照内容。
+- `Term`、`LeaderId`：用于任期和领导者合法性校验。
+
+Follower 接收后截断过期日志，更新快照边界、`m_commitIndex` 与 `m_lastApplied`，并将快照作为 `ApplyMsg` 通知 KV Server 恢复状态机。
+
+## 一次完整的Put/Get流程详解
