@@ -510,3 +510,251 @@ Candidate 会带上：
 Follower 接收后截断过期日志，更新快照边界、`m_commitIndex` 与 `m_lastApplied`，并将快照作为 `ApplyMsg` 通知 KV Server 恢复状态机。
 
 ## 一次完整的Put/Get流程详解
+在clerk触发一个put请求时，具体发生了什么？
+整体可以概括为如下：
+	`Put` 不是“写入 Leader 的 Log 就成功”，而是“请求先由 Leader 追加到本地日志，再通过 AppendEntries 复制到多数派；Leader 推进 commitIndex 后，Raft 将日志按序 Apply 给 KvServer，KvServer 执行状态机并唤醒等待该日志索引的 RPC，最后客户端才得到 OK”。
+
+一次正确的执行数据流：
+1. Clerk 为一次逻辑 Put 生成稳定的 `(ClientId, RequestId)`，向最近 Leader 发 `PutAppend`。
+2. RPC 到达 KvServer；KvServer 把参数封装成 `Op`，调用 Raft `Start`。
+3. 非 Leader 立即返回 `ErrWrongLeader`；Leader 将 `Op` 序列化成 LogEntry，追加日志并持久化，返回逻辑 `raftIndex`。
+4. KvServer 为 `raftIndex` 建等待队列，并等待 Apply，不等待某个单独的“提交回调”。
+5. Leader heartbeat ticker 对每个 peer 根据 `nextIndex` 选择 `prevLogIndex/prevLogTerm/entries`(合适的日志内容)；必要时改发快照。
+6. Follower 检查 term、重置选举计时器、校验前置日志；匹配后追加/覆盖日志并返回成功，同时按 `leaderCommit` 更新自己的 commitIndex。
+7. Leader 收到**多数成功 ack**，确认当前 term 日志达到多数派，推进 commitIndex。
+8. 每个节点的 applier ticker 顺序产生 ApplyMsg；KvServer 消费消息、按请求 ID 去重、执行 Put。
+9. Leader KvServer 用 `raftIndex -> waitApplyCh` 唤醒原 RPC，并检查 `(ClientId, RequestId)` 防止同索引错配。
+10. Clerk 收到 `OK` 返回；若失败或超时则继续轮询节点，重试仍使用同一个请求身份。
+
+### 阶段一：Clerk 发送 Put
+入口是 `Clerk::Put`（`src/raftClerk/clerk.cpp:74`），它调用 `PutAppend(key, value, "Put")`。
+
+#### 1 请求身份和重试
+
+`Clerk::PutAppend`（`src/raftClerk/clerk.cpp:41`）第一次执行时：
+1. `m_requestId++`，为这次逻辑请求生成一个序号。
+2. 读取 `m_clientId`。同一个 Clerk 生命周期内它不变。
+3. 从 `m_recentLeaderId` 开始尝试节点。
+4. 构造 `PutAppendArgs{key, value, op, clientId, requestId}`。
+5. 如果 TCP/RPC 失败，或者返回 `ErrWrongLeader`，按环形顺序尝试下一个节点。
+6. 收到 `OK` 后把该节点记为新的 `m_recentLeaderId` 并返回。
+
+因此这是“至少一次发送 + 服务端按请求 ID 去重”：网络超时可能发生在服务端已经执行之后，客户端不能凭超时判断请求是否到达，所以重试必须复用同一个 `(ClientId, RequestId)`。
+
+#### 2 Clerk 侧 RPC 封装
+
+`raftServerRpcUtil::PutAppend`（`src/raftClerk/raftServerRpcUtil.cpp:24`）只做三件事：
+1. 创建 `MprpcController`（调用 MprpcChannel 重写后的 channel ）。
+2. 调用生成的 `kvServerRpc_Stub::PutAppend`。
+3. 用 `controller.Failed()` 区分网络/编解码失败。
+
+业务层的 `ErrWrongLeader` 在 Protobuf reply 里，不是 `controller.Failed()`。这两个错误通道必须分开理解。
+
+### 阶段二：RPC 到达 KvServer
+
+自定义 RPC 的字节路径是：
+```text
+MprpcChannel::CallMethod
+  -> varint(header_size) + RpcHeader(service, method, args_size) + protobuf(args)
+  -> TCP send
+  -> RpcProvider::OnMessage
+  -> 按 service_name / method_name 查表并反序列化
+  -> kvServerRpc::CallMethod
+  -> KvServer::PutAppend(controller, request, response, done)
+```
+
+`KvServer` 的 Protobuf 重载（`kvServer.cpp:381`）调用业务重载 `KvServer::PutAppend(args, reply)`，业务函数返回后执行 `done->Run()`。这里的 `done` 只负责把 response 发回 Clerk，**不是 Raft 的提交通知**。
+
+### 阶段三：KvServer 把请求交给 Raft
+
+`KvServer::PutAppend`（`src/raftCore/kvServer.cpp:220`）先把参数转换为普通 C++ 对象：
+```text
+Op.Operation = "Put"
+Op.Key       = args->key()
+Op.Value     = args->value()
+Op.ClientId  = args->clientid()
+Op.RequestId = args->requestid()
+```
+
+然后调用：
+```cpp
+m_raftNode->Start(op, &raftIndex, &term, &isLeader);
+```
+
+#### 1 `Raft::Start` 做什么
+
+`Raft::Start`（`src/raftCore/raft.cpp:966`）持有 `m_mtx`：
+1. 若 `m_status != Leader`，返回 `isLeader=false`、索引和 term 为 `-1`；KvServer 立即返回 `ErrWrongLeader`。
+2. 调用 `Op::asString()`，用 Boost 文本归档把完整命令序列化成字符串。
+3. 创建 `raftRpcProctoc::LogEntry`：
+   - `Command = serialized Op`
+   - `LogTerm = m_currentTerm`
+   - `LogIndex = getNewCommandIndex()`，即当前逻辑尾索引 + 1
+4. 追加到 `m_logs`。
+5. 调用 `persist()`，保存 currentTerm、votedFor、快照边界和日志。
+6. 返回新日志索引、term 和 `isLeader=true`。
+
+这里的 `m_logs` 不是简单的“从 0 开始的 vector 下标”。快照裁剪后，日志有一个逻辑索引边界 `m_lastSnapshotIncludeIndex`；物理下标通过：
+```cpp
+physicalIndex = logIndex - m_lastSnapshotIncludeIndex - 1;
+```
+转换，代码封装在 `getSlicesIndexFromLogIndex`（`raft.cpp:759`）。
+
+#### 2 KvServer 建立等待点
+只有 Leader 的 `Start` 成功后，KvServer 才创建：
+```text
+waitApplyCh[raftIndex] -> LockQueue<Op>
+```
+
+随后调用 `timeOutPop(CONSENSUS_TIMEOUT, &raftCommitOp)`，当前超时配置是 500 ms。它等待的条件不是“AppendEntries 返回”，而是后面状态机线程把同一索引的 `Op` 推入这个队列，说明状态机已经改变，命令请求完成。
+
+### 阶段四：Leader 的心跳判断与日志选择
+
+#### 1 Leader 何时发送
+
+`leaderHearBeatTicker`（`src/raftCore/raft.cpp:489`）只在 `m_status == Leader` 时等待心跳间隔；当前配置：
+```text
+HeartBeatTimeout = 25 ms
+minRandomizedElectionTime = 300 ms
+maxRandomizedElectionTime = 500 ms
+```
+
+睡醒后它检查 `m_lastResetHearBeatTime` 是否在等待期间被更新：
+- 已更新：说明这段时间内已有一次心跳触发，继续等待；
+- 未更新：调用 `doHeartBeat()`。
+
+`doHeartBeat()` 为每一个 Follower 单独构造一个 **AppendEntries** 请求。即使 `entries` 为空，它仍然是 AppendEntries RPC，只是通常称作“空心跳”。
+
+#### 2 每个 Follower 的三个复制状态
+
+Leader 对 peer `i` 维护：
+
+| 状态 | 含义 |
+| --- | --- |
+| `m_nextIndex[i]` | 下次发给该 Follower 的第一条日志逻辑索引 |
+| `m_matchIndex[i]` | 已知该 Follower 与 Leader 匹配到的最大逻辑索引 |
+| Leader 的 `m_logs` | Leader 自己的完整（快照边界之后）日志 |
+
+新 Leader 当选后，代码将每个 `nextIndex` 初始化为 `lastLogIndex + 1`，`matchIndex` 置为 0；这意味着先乐观地认为 Follower 与自己一样新，失败后再回退。
+
+#### 3 `doHeartBeat` 如何选择 `prevLog` 和 `entries`
+
+对 Follower `i`：
+1. 若 `m_nextIndex[i] <= m_lastSnapshotIncludeIndex`，旧日志已经被快照裁掉，发送 `InstallSnapshot`，不发送 AppendEntries。
+2. 否则调用 `getPrevLogInfo(i, &preLogIndex, &preLogTerm)`：
+   - 通常 `preLogIndex = nextIndex[i] - 1`；
+   - `preLogIndex` 正好位于快照边界时，`preLogTerm` 使用 `m_lastSnapshotIncludeTerm`。
+3. 若 `preLogIndex` 不是快照边界，复制 `m_logs` 中从 `nextIndex[i]` 到 Leader 尾部的所有条目。
+4. 若没有新条目，`entries_size() == 0`，这就是空心跳。
+5. `leadercommit = m_commitIndex` 一并发送，让 Follower 知道 Leader 已提交到哪里。
+
+所以“logs 选择”不是把整个日志无条件发送，而是以 `nextIndex` 为起点，发送：
+```text
+prevLogIndex = nextIndex[peer] - 1
+prevLogTerm  = Leader 在 prevLogIndex 的 term
+entries      = Leader 在 nextIndex[peer] ... lastLogIndex 的后缀
+```
+
+### 阶段五：Follower 的 AppendEntries 判断
+Follower 入口是 `Raft::AppendEntries1`（`src/raftCore/raft.cpp:8`）。判断顺序非常重要。
+
+#### 1 任期检查与心跳重置
+1. `args.term < m_currentTerm`：拒绝，返回当前 term，**不重置选举定时器**。过期 Leader 的消息不能阻止新选举。
+2. `args.term > m_currentTerm`：更新 term、清空 `votedFor`、转为 Follower，并持久化。
+3. term 相等时也强制转为 Follower：同一 term 收到合法 Leader 的 AppendEntries，Candidate 不能继续竞选。
+4. 通过前面的 term 检查后才执行 `m_lastResetElectionTime = now()`。
+
+这就是“心跳判断”的核心：心跳不是特殊消息，仍然必须经过 term 和日志前缀检查；只有当前或更新任期的 Leader 消息才能重置 Follower 的选举计时器。
+
+#### 2 前置日志检查
+
+Follower 必须确认 `prevLogIndex/prevLogTerm` 与自己的日志相同：
+- `prevLogIndex > getLastLogIndex()`：Follower 太短，返回 `lastLogIndex + 1`。
+- `prevLogIndex` 位于快照之前：理论上需要让 Leader 走快照路径。
+- `matchLog(prevLogIndex, prevLogTerm)` 为真：前缀匹配，接受 entries。
+- 前缀存在但 term 不匹配：拒绝，并返回一个更靠前的 `UpdateNextIndex`。
+
+只有前缀匹配时，Follower 才会逐条检查收到的 entries：索引超出本地尾部就追加；同索引 term 不同就覆盖该位置。最后将：
+```text
+m_commitIndex = min(LeaderCommit, Follower 的 lastLogIndex)
+```
+这样 Follower 不会因为 Leader 的 commitIndex 超过自己已经保存的日志而越界。
+
+### 阶段六：Leader 如何认定“已提交”
+
+`sendAppendEntries` 收到成功回复后，在锁内执行：
+1. `m_matchIndex[server] = max(old, prevLogIndex + entries_size)`；
+2. `m_nextIndex[server] = m_matchIndex[server] + 1`；
+3. 本轮成功数达到多数派时，若本轮最后一条日志的 term 等于当前 term，推进 `m_commitIndex`。
+
+为什么要限制“当前 term”？这是 Raft 的关键安全规则：Leader 不能仅凭多数副本存有旧任期日志，就直接把旧任期日志标成 committed；**只要当前任期有一条日志提交，之前任期的日志才会因日志顺序一起安全提交**。
+
+标准实现通常根据所有 `matchIndex` 计算最大的多数派索引 `N`，再检查 `log[N].term == currentTerm`。本项目保留了 `leaderUpdateCommitIndex()`（`raft.cpp:571`），但当前 `sendAppendEntries` 主要使用本轮 `appendNums` 和本轮 entries 尾索引推进，学习时应知道这是实现策略而非 Raft 唯一写法。
+
+还要注意：Leader 推进 `m_commitIndex` 后，不会通过一个独立“提交回调”通知 KvServer；`applierTicker` 下一次循环才观察到这个变化。
+
+### 阶段七：提交日志如何 Apply 到 KV
+
+#### 1 Raft 的 Apply ticker
+
+`applierTicker`（`src/raftCore/raft.cpp:155`）循环调用 `getApplyLogs()`：
+```text
+while (m_lastApplied < m_commitIndex):
+    m_lastApplied++
+    读取该逻辑索引的 LogEntry
+    生成 ApplyMsg{CommandValid=true, Command, CommandIndex}
+```
+
+它严格按索引递增生成消息，然后把每条消息推入共享的 `applyChan`。`ApplyMsg` 是 Raft 与状态机之间的接口，不是网络 RPC。
+
+#### 2 KvServer 应用和去重
+
+`KvServer::ReadRaftApplyCommandLoop` 阻塞 `applyChan->Pop()`，收到 `CommandValid` 后调用 `GetCommandFromRaft`：
+
+1. 从 `message.Command` 反序列化 `Op`。
+2. 查询 `m_lastRequestId[ClientId]`。
+3. 若 `RequestId <= lastRequestId`，视为重复，不再次修改状态机。
+4. 否则执行 `ExecutePutOpOnKVDB`（或 `ExecuteAppendOpOnKVDB`），并更新去重水位。
+5. 调用 `SendMessageToWaitChan(op, message.CommandIndex)`，唤醒等待该索引的 RPC。
+
+这说明幂等性属于 KV 服务层，而不是 Raft 层。Raft 只复制一串命令字节，并不知道 `ClientId`、`RequestId` 的业务含义。
+
+#### 3 原 PutAppend RPC 如何结束
+
+等待线程从 `timeOutPop` 返回后还要比较：
+```text
+raftCommitOp.ClientId == op.ClientId
+raftCommitOp.RequestId == op.RequestId
+```
+
+原因是 **Leader 可能在等待期间失去领导权**，新 Leader 可能在同一 `raftIndex` 写入了不同命令。索引相同并不代表命令相同；比较请求身份可以避免旧 Leader 对错误命令返回 OK。
+
+如果 500 ms 内没有收到 Apply：
+- 若 `ifRequestDuplicate` 已经看到该请求，返回 OK；这表示命令可能已经应用，只是通知晚了；
+- 否则返回 `ErrWrongLeader`，Clerk 换节点重试。
+
+超时路径不会撤销日志。**日志是否最终提交由 Raft 复制和选举结果决定。**
+
+最好的做法就是将 Apply 日志 选举 合体。
+
+### 快照、日志裁剪与落后节点
+
+#### 1 本地生成快照
+
+KvServer 在 Apply 后检查 Raft 状态大小；超过阈值时：
+1. `MakeSnapShot()` 序列化跳表数据和 `m_lastRequestId`；
+2. 调用 `Raft::Snapshot(appliedIndex, snapshot)`；
+3. Raft 删除该索引及之前的日志，保存 `lastSnapshotIncludeIndex/Term` 与快照。
+
+裁剪后必须同时记住快照最后一条日志的 index 和 term，因为它充当后续 AppendEntries 的“虚拟前置日志”。
+
+#### 2 Leader 给过于落后的 Follower 安装快照
+
+`doHeartBeat` 发现 `nextIndex[peer] <= lastSnapshotIncludeIndex` 时，启动 `leaderSendSnapShot`：
+1. 从 `Persister` 读取快照；
+2. 发送 `InstallSnapshot`；
+3. 成功后令 `matchIndex[peer] = snapshotIndex`、`nextIndex[peer] = snapshotIndex + 1`；
+4. Follower 截断旧日志，更新提交/应用索引，向自己的 `applyChan` 投递 `SnapshotValid`；
+5. KvServer 调用 `CondInstallSnapshot` 并恢复跳表和去重表。
+
+这也是“日志选择”的第三种结果：不是选择 entries，而是选择 snapshot。
